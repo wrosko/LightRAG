@@ -216,14 +216,82 @@ class KuzuStorage(BaseGraphStorage):
             raise
 
     async def node_degree(self, node_id: str) -> int:
-        """Get the degree (number of connected edges) of a node."""
-        # Placeholder implementation - will be completed in task 6
-        return 0
+        """Get the degree (number of connected edges) of a node.
+
+        Args:
+            node_id: The ID of the node
+
+        Returns:
+            The number of edges connected to the node
+        """
+        try:
+            query = """
+            MATCH (a:Entity {entity_id: $node_id})-[r:DIRECTED]-(b:Entity)
+            RETURN count(r) AS degree
+            """
+            result = self._connection.execute(query, {"node_id": node_id})
+
+            if result.has_next():
+                row = result.get_next()
+                return int(row[0]) if row[0] is not None else 0
+            return 0
+
+        except Exception as e:
+            self.logger.error(f"[{self.workspace}] Error getting node degree for {node_id}: {str(e)}")
+            raise
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
-        """Get the total degree of an edge."""
-        # Placeholder implementation - will be completed in task 6
-        return 0
+        """Get the total degree of an edge (sum of degrees of its source and target nodes).
+
+        Args:
+            src_id: The ID of the source node
+            tgt_id: The ID of the target node
+
+        Returns:
+            The sum of the degrees of the source and target nodes
+        """
+        try:
+            src_degree = await self.node_degree(src_id)
+            tgt_degree = await self.node_degree(tgt_id)
+            return src_degree + tgt_degree
+
+        except Exception as e:
+            self.logger.error(f"[{self.workspace}] Error getting edge degree for {src_id} -> {tgt_id}: {str(e)}")
+            raise
+
+    async def edge_degrees_batch(
+        self, edge_pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
+        """Edge degrees as a batch using node_degrees_batch for bulk degree calculations.
+
+        Args:
+            edge_pairs: List of (source_id, target_id) tuples
+
+        Returns:
+            A dictionary mapping edge pairs to their total degrees
+        """
+        try:
+            # Get all unique node IDs from the edge pairs
+            node_ids = set()
+            for src_id, tgt_id in edge_pairs:
+                node_ids.add(src_id)
+                node_ids.add(tgt_id)
+
+            # Get degrees for all nodes in batch
+            node_degrees = await self.node_degrees_batch(list(node_ids))
+
+            # Calculate edge degrees
+            edge_degrees = {}
+            for src_id, tgt_id in edge_pairs:
+                src_degree = node_degrees.get(src_id, 0)
+                tgt_degree = node_degrees.get(tgt_id, 0)
+                edge_degrees[(src_id, tgt_id)] = src_degree + tgt_degree
+
+            return edge_degrees
+
+        except Exception as e:
+            self.logger.error(f"[{self.workspace}] Error in edge_degrees_batch: {str(e)}")
+            raise
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         """Get node by its ID, returning only node properties.
@@ -389,9 +457,81 @@ class KuzuStorage(BaseGraphStorage):
             raise
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
-        """Get all edges connected to a node."""
-        # Placeholder implementation - will be completed in task 6
-        return None
+        """Get all edges connected to a node.
+
+        Args:
+            source_node_id: The ID of the node to get edges for
+
+        Returns:
+            A list of (source_id, target_id) tuples representing edges,
+            or None if the node doesn't exist
+        """
+        try:
+            # First check if the node exists
+            if not await self.has_node(source_node_id):
+                return None
+
+            query = """
+            MATCH (a:Entity {entity_id: $node_id})-[r:DIRECTED]-(b:Entity)
+            RETURN a.entity_id AS source_id, b.entity_id AS target_id
+            """
+            result = self._connection.execute(query, {"node_id": source_node_id})
+            edges = []
+
+            # Process all results
+            while result.has_next():
+                row = result.get_next()
+                source_id = str(row[0]) if row[0] is not None else ""
+                target_id = str(row[1]) if row[1] is not None else ""
+
+                if source_id and target_id:
+                    edges.append((source_id, target_id))
+
+            return edges
+
+        except Exception as e:
+            self.logger.error(f"[{self.workspace}] Error getting node edges for {source_node_id}: {str(e)}")
+            raise
+
+    async def get_nodes_edges_batch(
+        self, node_ids: list[str]
+    ) -> dict[str, list[tuple[str, str]]]:
+        """Get nodes edges as a batch using UNWIND for bulk edge retrieval.
+
+        Args:
+            node_ids: List of node IDs to get edges for
+
+        Returns:
+            A dictionary mapping each node_id to its list of (source_id, target_id) edge tuples
+        """
+        try:
+            query = """
+            UNWIND $node_ids AS node_id
+            MATCH (a:Entity {entity_id: node_id})-[r:DIRECTED]-(b:Entity)
+            RETURN node_id AS query_node_id, a.entity_id AS source_id, b.entity_id AS target_id
+            """
+            result = self._connection.execute(query, {"node_ids": node_ids})
+            nodes_edges = {}
+
+            # Initialize empty lists for all requested nodes
+            for node_id in node_ids:
+                nodes_edges[node_id] = []
+
+            # Process all results
+            while result.has_next():
+                row = result.get_next()
+                query_node_id = str(row[0]) if row[0] is not None else ""
+                source_id = str(row[1]) if row[1] is not None else ""
+                target_id = str(row[2]) if row[2] is not None else ""
+
+                if query_node_id and source_id and target_id:
+                    nodes_edges[query_node_id].append((source_id, target_id))
+
+            return nodes_edges
+
+        except Exception as e:
+            self.logger.error(f"[{self.workspace}] Error in get_nodes_edges_batch: {str(e)}")
+            raise
 
     async def get_nodes_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
         """Get all nodes that are associated with the given chunk_ids."""
