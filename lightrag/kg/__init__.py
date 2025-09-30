@@ -15,6 +15,7 @@ STORAGE_IMPLEMENTATIONS = {
             "PGGraphStorage",
             "MongoGraphStorage",
             "MemgraphStorage",
+            "KuzuStorage",
         ],
         "required_methods": ["upsert_node", "upsert_edge"],
     },
@@ -53,6 +54,7 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     "Neo4JStorage": ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"],
     "MongoGraphStorage": [],
     "MemgraphStorage": ["MEMGRAPH_URI"],
+    "KuzuStorage": [],  # KUZU_DB_PATH is optional, defaults to in-memory
     "AGEStorage": [
         "AGE_POSTGRES_DB",
         "AGE_POSTGRES_USER",
@@ -101,6 +103,7 @@ STORAGES = {
     "FaissVectorDBStorage": ".kg.faiss_impl",
     "QdrantVectorDBStorage": ".kg.qdrant_impl",
     "MemgraphStorage": ".kg.memgraph_impl",
+    "KuzuStorage": ".kg.kuzu_impl",
 }
 
 
