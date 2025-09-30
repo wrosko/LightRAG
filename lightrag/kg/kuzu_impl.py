@@ -291,6 +291,103 @@ class KuzuStorage(BaseGraphStorage):
             self.logger.error(f"[{self.workspace}] Error getting edge between {source_node_id} and {target_node_id}: {str(e)}")
             raise
 
+    async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
+        """Get nodes as a batch using UNWIND for efficient bulk retrieval.
+
+        Args:
+            node_ids: List of node entity IDs to fetch.
+
+        Returns:
+            A dictionary mapping each node_id to its node data (or None if not found).
+        """
+        try:
+            query = """
+            UNWIND $node_ids AS id
+            MATCH (n:Entity {entity_id: id})
+            RETURN n.entity_id AS entity_id,
+                   n.entity_type AS entity_type,
+                   n.description AS description,
+                   n.source_id AS source_id,
+                   n.content AS content
+            """
+            result = self._connection.execute(query, {"node_ids": node_ids})
+            nodes = {}
+
+            # Process all results
+            while result.has_next():
+                row = result.get_next()
+                entity_id = str(row[0]) if row[0] is not None else ""
+
+                if entity_id:
+                    nodes[entity_id] = {
+                        "entity_id": entity_id,
+                        "entity_type": str(row[1]) if row[1] is not None else "",
+                        "description": str(row[2]) if row[2] is not None else "",
+                        "source_id": str(row[3]) if row[3] is not None else "",
+                        "content": str(row[4]) if row[4] is not None else "",
+                    }
+
+            return nodes
+
+        except Exception as e:
+            self.logger.error(f"[{self.workspace}] Error in get_nodes_batch: {str(e)}")
+            raise
+
+    async def get_edges_batch(
+        self, pairs: list[dict[str, str]]
+    ) -> dict[tuple[str, str], dict]:
+        """Get edges as a batch using UNWIND for bulk edge property retrieval.
+
+        Args:
+            pairs: List of dictionaries, e.g. [{"src": "node1", "tgt": "node2"}, ...]
+
+        Returns:
+            A dictionary mapping (src, tgt) tuples to their edge properties.
+        """
+        try:
+            query = """
+            UNWIND $pairs AS pair
+            MATCH (a:Entity {entity_id: pair.src})-[r:DIRECTED]-(b:Entity {entity_id: pair.tgt})
+            RETURN pair.src AS src_id, pair.tgt AS tgt_id,
+                   r.weight AS weight, r.source_id AS source_id,
+                   r.description AS description, r.keywords AS keywords
+            """
+            result = self._connection.execute(query, {"pairs": pairs})
+            edges_dict = {}
+
+            # Process all results
+            while result.has_next():
+                row = result.get_next()
+                src_id = str(row[0]) if row[0] is not None else ""
+                tgt_id = str(row[1]) if row[1] is not None else ""
+
+                if src_id and tgt_id:
+                    edge_props = {
+                        "weight": str(row[2]) if row[2] is not None else "1.0",
+                        "source_id": str(row[3]) if row[3] is not None else "",
+                        "description": str(row[4]) if row[4] is not None else "",
+                        "keywords": str(row[5]) if row[5] is not None else "",
+                    }
+                    edges_dict[(src_id, tgt_id)] = edge_props
+
+            # For pairs that didn't have edges, add default properties
+            for pair in pairs:
+                src_id = pair["src"]
+                tgt_id = pair["tgt"]
+                if (src_id, tgt_id) not in edges_dict:
+                    edges_dict[(src_id, tgt_id)] = {
+                        "weight": "1.0",
+                        "source_id": "",
+                        "description": "",
+                        "keywords": "",
+                    }
+
+            return edges_dict
+
+        except Exception as e:
+            self.logger.error(f"[{self.workspace}] Error in get_edges_batch: {str(e)}")
+            raise
+
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """Get all edges connected to a node."""
         # Placeholder implementation - will be completed in task 6
