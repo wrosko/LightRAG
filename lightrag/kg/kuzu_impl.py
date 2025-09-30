@@ -187,9 +187,33 @@ class KuzuStorage(BaseGraphStorage):
             raise
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
-        """Check if an edge exists between two nodes."""
-        # Placeholder implementation - will be completed in task 4
-        return False
+        """Check if an edge exists between two nodes.
+
+        Args:
+            source_node_id: The ID of the source node
+            target_node_id: The ID of the target node
+
+        Returns:
+            True if the edge exists, False otherwise
+        """
+        try:
+            query = """
+            MATCH (a:Entity {entity_id: $source_entity_id})-[r:DIRECTED]-(b:Entity {entity_id: $target_entity_id})
+            RETURN count(r) > 0 AS edge_exists
+            """
+            result = self._connection.execute(query, {
+                "source_entity_id": source_node_id,
+                "target_entity_id": target_node_id
+            })
+
+            if result.has_next():
+                row = result.get_next()
+                return bool(row[0])
+            return False
+
+        except Exception as e:
+            self.logger.error(f"[{self.workspace}] Error checking edge existence between {source_node_id} and {target_node_id}: {str(e)}")
+            raise
 
     async def node_degree(self, node_id: str) -> int:
         """Get the degree (number of connected edges) of a node."""
@@ -233,9 +257,39 @@ class KuzuStorage(BaseGraphStorage):
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
-        """Get edge properties between two nodes."""
-        # Placeholder implementation - will be completed in task 4
-        return None
+        """Get edge properties between two nodes.
+
+        Args:
+            source_node_id: The ID of the source node
+            target_node_id: The ID of the target node
+
+        Returns:
+            A dictionary of edge properties if found, None otherwise
+        """
+        try:
+            query = """
+            MATCH (a:Entity {entity_id: $source_entity_id})-[r:DIRECTED]-(b:Entity {entity_id: $target_entity_id})
+            RETURN r.weight, r.source_id, r.description, r.keywords
+            """
+            result = self._connection.execute(query, {
+                "source_entity_id": source_node_id,
+                "target_entity_id": target_node_id
+            })
+
+            if result.has_next():
+                row = result.get_next()
+                # Convert the row to a dictionary with proper property names and defaults
+                return {
+                    "weight": str(row[0]) if row[0] is not None else "1.0",
+                    "source_id": str(row[1]) if row[1] is not None else "",
+                    "description": str(row[2]) if row[2] is not None else "",
+                    "keywords": str(row[3]) if row[3] is not None else "",
+                }
+            return None
+
+        except Exception as e:
+            self.logger.error(f"[{self.workspace}] Error getting edge between {source_node_id} and {target_node_id}: {str(e)}")
+            raise
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """Get all edges connected to a node."""
@@ -286,12 +340,80 @@ class KuzuStorage(BaseGraphStorage):
             self.logger.error(f"[{self.workspace}] Error during upsert for node {node_id}: {str(e)}")
             raise
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type((RuntimeError, ConnectionError, OSError)),
+    )
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
-        """Insert a new edge or update an existing edge in the graph."""
-        # Placeholder implementation - will be completed in task 4
-        pass
+        """Insert a new edge or update an existing edge in the graph.
+
+        Args:
+            source_node_id: The ID of the source node
+            target_node_id: The ID of the target node
+            edge_data: A dictionary of edge properties
+        """
+        try:
+            # Validate that both source and target nodes exist
+            source_exists = await self.has_node(source_node_id)
+            target_exists = await self.has_node(target_node_id)
+
+            if not source_exists:
+                raise ValueError(f"Source node '{source_node_id}' does not exist")
+            if not target_exists:
+                raise ValueError(f"Target node '{target_node_id}' does not exist")
+
+            # Prepare edge properties with defaults
+            properties = dict(edge_data)
+
+            # Ensure required properties exist with defaults
+            if "weight" not in properties:
+                properties["weight"] = 1.0
+            if "source_id" not in properties:
+                properties["source_id"] = ""
+            if "description" not in properties:
+                properties["description"] = ""
+            if "keywords" not in properties:
+                properties["keywords"] = ""
+
+            # Convert weight to float for proper storage
+            try:
+                properties["weight"] = float(properties["weight"])
+            except (ValueError, TypeError):
+                properties["weight"] = 1.0
+
+            # Use MERGE to create or update the directed edges (both directions for undirected graph)
+            query = """
+            MATCH (a:Entity {entity_id: $source_entity_id})
+            MATCH (b:Entity {entity_id: $target_entity_id})
+            MERGE (a)-[r1:DIRECTED]->(b)
+            SET r1.weight = $weight,
+                r1.source_id = $source_id,
+                r1.description = $description,
+                r1.keywords = $keywords
+            MERGE (b)-[r2:DIRECTED]->(a)
+            SET r2.weight = $weight,
+                r2.source_id = $source_id,
+                r2.description = $description,
+                r2.keywords = $keywords
+            """
+
+            self._connection.execute(query, {
+                "source_entity_id": source_node_id,
+                "target_entity_id": target_node_id,
+                "weight": properties["weight"],
+                "source_id": properties["source_id"],
+                "description": properties["description"],
+                "keywords": properties["keywords"]
+            })
+
+            self.logger.debug(f"[{self.workspace}] Upserted edge: {source_node_id} -> {target_node_id}")
+
+        except Exception as e:
+            self.logger.error(f"[{self.workspace}] Error during edge upsert between {source_node_id} and {target_node_id}: {str(e)}")
+            raise
 
     async def delete_node(self, node_id: str) -> None:
         """Delete a node from the graph."""
